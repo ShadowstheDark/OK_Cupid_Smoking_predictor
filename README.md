@@ -10,9 +10,7 @@ smoking is predictable from the rest of a dating profile.**
 ![scikit-learn](https://img.shields.io/badge/scikit--learn-1.7-F7931E?logo=scikitlearn&logoColor=white)
 ![License](https://img.shields.io/badge/license-MIT-2ea44f)
 
-<!-- After deploying to Streamlit Community Cloud, add the live link here, e.g.:
-[![Open in Streamlit](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://YOUR-APP-NAME.streamlit.app)
--->
+[![Open in Streamlit](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://okcupidsmokingpredictor-bb36gkdr5sbeub82b6lz83.streamlit.app/)
 
 ---
 
@@ -91,6 +89,10 @@ that makes the dataset feel like people rather than rows.
 ---
 
 ## Quickstart
+
+**[Try the live demo](https://okcupidsmokingpredictor-bb36gkdr5sbeub82b6lz83.streamlit.app/)** — no install needed.
+
+Or run it locally:
 
 ```bash
 git clone https://github.com/ShadowstheDark/OK_Cupid_Smoking_predictor.git
