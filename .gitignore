@@ -1,0 +1,30 @@
+# ---------------------------------------------------------------------------
+# Data
+# The repo ships only a small demo sample (data/sample_profiles.csv).
+# The full 151 MB profiles.csv is fetched locally and never committed.
+# ---------------------------------------------------------------------------
+data/full/
+**/profiles.csv
+*.csv
+!data/sample_profiles.csv
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Streamlit
+.streamlit/secrets.toml
+
+# OS / editor
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/
+.idea/

@@ -1,0 +1,6 @@
+# Runtime dependencies for the Streamlit app.
+# Versions are pinned to the environment this app was built and verified on.
+streamlit==1.51.0
+pandas==2.3.3
+numpy==2.3.5
+plotly==6.3.0

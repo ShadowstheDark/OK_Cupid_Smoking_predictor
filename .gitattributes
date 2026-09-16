@@ -1,0 +1,25 @@
+# Auto-detect text files and normalise line endings to LF in the repository
+* text=auto
+
+# Windows launcher: needs CRLF in the working tree so a double-click works
+*.bat text eol=crlf
+
+# ---------------------------------------------------------------------------
+# Files whose exact bytes matter -- never apply line-ending conversion
+# ---------------------------------------------------------------------------
+# The essays in this CSV contain embedded newlines inside quoted fields.
+# Converting them to CRLF would inject stray carriage returns into real
+# people's profile text, and would make the file no longer byte-identical to
+# what scripts/build_sample.py produces.
+*.csv -text
+
+# Notebooks are JSON. Keeping them byte-stable stops them showing up as
+# modified after every run, and keeps cell sources exactly as written.
+*.ipynb -text -diff -merge linguist-documentation=false linguist-detectable=false
+
+# Screenshots and other binaries
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.pdf binary

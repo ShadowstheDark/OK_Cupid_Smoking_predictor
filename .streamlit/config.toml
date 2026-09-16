@@ -1,0 +1,22 @@
+# Streamlit-level theme so the deployed app matches the custom CSS in app.py
+# (gradient headers, glass metric cards, #ff2a5f accent).
+[theme]
+base = "dark"
+primaryColor = "#ff2a5f"
+backgroundColor = "#0e1117"
+secondaryBackgroundColor = "#111420"
+textColor = "#e6edf3"
+font = "sans serif"
+
+[browser]
+gatherUsageStats = false
+
+[client]
+# Hides the developer menu and the Deploy button, so a shared link opens on
+# the app itself rather than Streamlit's toolbar.
+toolbarMode = "viewer"
+# A public demo should show a friendly message rather than a Python traceback.
+showErrorDetails = false
+
+[server]
+headless = true
