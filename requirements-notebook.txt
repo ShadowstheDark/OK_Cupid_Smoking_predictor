@@ -1,4 +1,6 @@
 # Extra dependencies needed to re-run notebooks/okcupid-smoking-prediction.ipynb.
-# The notebook reads data/full/profiles.csv, which is not committed — see DATA.md.
+# Installs the app requirements first, then adds scikit-learn.
+#
+# The notebook reads data/full/profiles.csv, which is not committed -- see DATA.md.
 -r requirements.txt
-scikit-learn==1.7.2
+scikit-learn>=1.5,<2

@@ -1,6 +1,21 @@
 # Runtime dependencies for the Streamlit app.
-# Versions are pinned to the environment this app was built and verified on.
-streamlit==1.51.0
-pandas==2.3.3
-numpy==2.3.5
-plotly==6.3.0
+#
+# These are bounded ranges rather than exact pins, on purpose.
+#
+# The first Community Cloud deploy failed with "Error installing
+# requirements" because this file pinned the exact versions from a local
+# development machine (streamlit==1.51.0, pandas==2.3.3, numpy==2.3.5,
+# plotly==6.3.0). Community Cloud brings its own Python version and a base
+# environment that already contains streamlit, pandas and numpy, so forcing
+# particular older versions into it is what breaks: the resolver has to
+# downgrade packages that other pre-installed packages may depend on.
+#
+# Ranges let the resolver keep whatever compatible versions the platform
+# already has, and pick wheels that match its Python.
+#
+# pandas and numpy are listed because app.py and data_loader.py import them
+# directly, though they also arrive as dependencies of streamlit.
+streamlit>=1.51,<2
+pandas>=2.2,<3
+numpy>=1.26,<3
+plotly>=6,<7
