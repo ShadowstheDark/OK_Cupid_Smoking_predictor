@@ -1,3 +1,5 @@
+from typing import Dict, Optional, Tuple
+
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -14,6 +16,7 @@ from smoking_model import (
     DRUG_OPTIONS,
     DRINK_OPTIONS,
     BODY_TYPE_OPTIONS,
+    SMOKER_POSITIVE_LABELS,
     get_model_suite,
     predict_single_profile,
 )
@@ -164,6 +167,59 @@ IS_SAMPLE = using_sample()
 @st.cache_resource(show_spinner="Training ML models & benchmarking suite...")
 def get_cached_model_suite():
     return get_model_suite()
+
+
+# ---------------------------------------------------------
+# Helpers for the criteria funnel
+# ---------------------------------------------------------
+# Every filter below treats an unanswered question the same way: by default a blank
+# answer fails the criterion, so all twelve filters judge candidates by the same rule.
+# The toggle in the criteria panel relaxes that, and either way the funnel reports how
+# many removals came from missing answers rather than genuine mismatches.
+
+
+def missing_answer(pool: pd.DataFrame, column: str) -> pd.Series:
+    """Rows in `pool` with no usable answer for `column`.
+
+    data_loader writes the literal "unspecified" into the categorical columns and
+    leaves age, height and the pet flags as NaN, so both shapes are handled here.
+    """
+    series = pool[column]
+    return series.isna() if series.dtype.kind == "f" else series.eq("unspecified")
+
+
+def filter_step(
+    label: str, pool: pd.DataFrame, keep: pd.Series, blank: Optional[pd.Series] = None
+) -> Tuple[Tuple[str, int, int], pd.DataFrame]:
+    """One funnel stage: its row and the narrowed pool.
+
+    `blank` marks the candidates whose answer to this criterion was missing, so the
+    funnel can attribute attrition to that rather than to a real mismatch.
+    """
+    dropped_blanks = int((blank & ~keep).sum()) if blank is not None else 0
+    return (label, int(keep.sum()), dropped_blanks), pool[keep]
+
+
+@st.cache_data(show_spinner=False)
+def answer_rates(_df: pd.DataFrame, column: str) -> Tuple[Dict[str, float], Dict[str, int]]:
+    """Smoker share by the answer given in `column`, among profiles that answered `smokes`.
+
+    The leading underscore keeps the DataFrame out of the cache key, so this is computed
+    once per column per process rather than on every widget interaction.
+    """
+    answered = _df[_df["smokes"].isin(SMOKER_POSITIVE_LABELS | {"no"})]
+    is_smoker = answered["smokes"].isin(SMOKER_POSITIVE_LABELS)
+    grouped = is_smoker.groupby(answered[column].astype(str))
+    return (
+        {key: float(value) for key, value in grouped.mean().items()},
+        {key: int(value) for key, value in grouped.size().items()},
+    )
+
+
+def model_coefficient(impact_df: pd.DataFrame, feature: str) -> Optional[float]:
+    """Balanced logistic-regression coefficient for one feature, or None if absent."""
+    row = impact_df[impact_df["feature"] == feature]
+    return float(row["lr_balanced_coef"].iloc[0]) if len(row) else None
 
 
 # ---------------------------------------------------------
@@ -324,77 +380,118 @@ if mode == "Match Calculator (Reality Check)":
             top_cities = ["All Bay Area", "san francisco", "oakland", "berkeley", "san mateo", "palo alto", "san jose", "alameda"]
             pref_city = st.selectbox("Location:", top_cities, index=0)
 
+            st.markdown("---")
+            pref_count_blanks = st.checkbox(
+                "Count profiles that left a question blank",
+                value=False,
+                help=(
+                    "Off (default): an unanswered question fails that criterion, so every "
+                    "filter judges candidates by the same rule and the funnel compares like "
+                    "with like. On: profiles that skipped a question are kept on the grounds "
+                    "that we cannot tell, which is more forgiving but quietly mixes answers "
+                    "with non-answers."
+                ),
+            )
+
     # ---------------------------------------------------------
     # Calculation & Funnel Simulation
     # ---------------------------------------------------------
     current_df = df_raw.copy()
-    funnel_steps = [("All 2012 Profiles", len(current_df))]
+    funnel_steps = [("All 2012 Profiles", len(current_df), 0)]
+
+    def narrow(label, keep, blank):
+        """Apply one criterion to the pool, recording the stage it produced."""
+        step, narrowed = filter_step(label, current_df, keep, blank)
+        funnel_steps.append(step)
+        return narrowed
+
+    def keep_with_blanks(keep, blank):
+        """The toggle decides whether an unanswered question waives the criterion."""
+        return keep | blank if pref_count_blanks else keep
 
     # 1. Gender Filter
-    if pref_gender == "Women":
-        current_df = current_df[current_df['sex'] == 'f']
-    elif pref_gender == "Men":
-        current_df = current_df[current_df['sex'] == 'm']
-    funnel_steps.append(("Gender Filter", len(current_df)))
+    if pref_gender != "Any Gender":
+        keep = current_df['sex'].eq('f' if pref_gender == "Women" else 'm')
+        blank = missing_answer(current_df, 'sex')
+        current_df = narrow("Gender Filter", keep_with_blanks(keep, blank), blank)
 
     # 2. Orientation
     if pref_orientation:
-        current_df = current_df[current_df['orientation'].isin(pref_orientation)]
-    funnel_steps.append(("Orientation", len(current_df)))
+        keep = current_df['orientation'].isin(pref_orientation)
+        blank = missing_answer(current_df, 'orientation')
+        current_df = narrow("Orientation", keep_with_blanks(keep, blank), blank)
 
     # 3. Age Range
-    current_df = current_df[(current_df['age'] >= age_min) & (current_df['age'] <= age_max)]
-    funnel_steps.append(("Age Window", len(current_df)))
+    keep = current_df['age'].between(age_min, age_max)
+    blank = missing_answer(current_df, 'age')
+    current_df = narrow("Age Window", keep_with_blanks(keep, blank), blank)
 
     # 4. Status
     if pref_status:
-        current_df = current_df[current_df['status'].isin(pref_status)]
-    funnel_steps.append(("Status", len(current_df)))
+        keep = current_df['status'].isin(pref_status)
+        blank = missing_answer(current_df, 'status')
+        current_df = narrow("Status", keep_with_blanks(keep, blank), blank)
 
     # 5. Height
-    current_df = current_df[(current_df['height'] >= height_min) & (current_df['height'] <= height_max)]
-    funnel_steps.append(("Height Range", len(current_df)))
+    keep = current_df['height'].between(height_min, height_max)
+    blank = missing_answer(current_df, 'height')
+    current_df = narrow("Height Range", keep_with_blanks(keep, blank), blank)
 
     # 6. Smoking
     if pref_smokes:
-        current_df = current_df[current_df['smokes'].isin(pref_smokes) | (current_df['smokes'] == 'unspecified')]
-    funnel_steps.append(("Smoking Habits", len(current_df)))
+        keep = current_df['smokes'].isin(pref_smokes)
+        blank = missing_answer(current_df, 'smokes')
+        current_df = narrow("Smoking Habits", keep_with_blanks(keep, blank), blank)
 
     # 7. Drinking
     if pref_drinks:
-        current_df = current_df[current_df['drinks'].isin(pref_drinks) | (current_df['drinks'] == 'unspecified')]
-    funnel_steps.append(("Drinking Habits", len(current_df)))
+        keep = current_df['drinks'].isin(pref_drinks)
+        blank = missing_answer(current_df, 'drinks')
+        current_df = narrow("Drinking Habits", keep_with_blanks(keep, blank), blank)
 
     # 8. Drugs
     if pref_drugs:
-        current_df = current_df[current_df['drugs'].isin(pref_drugs) | (current_df['drugs'] == 'unspecified')]
-    funnel_steps.append(("Drug Habits", len(current_df)))
+        keep = current_df['drugs'].isin(pref_drugs)
+        blank = missing_answer(current_df, 'drugs')
+        current_df = narrow("Drug Habits", keep_with_blanks(keep, blank), blank)
 
-    # 9. Religion
-    if pref_rel:
-        current_df = current_df[current_df['religion_base'].isin(pref_rel)]
-    if pref_seriousness:
-        current_df = current_df[current_df['religion_seriousness'].isin(pref_seriousness)]
-    funnel_steps.append(("Religion / Beliefs", len(current_df)))
+    # 9. Religion — belief and how seriously it is taken count as one stage
+    if pref_rel or pref_seriousness:
+        keep = pd.Series(True, index=current_df.index)
+        blank = pd.Series(False, index=current_df.index)
+        if pref_rel:
+            keep &= current_df['religion_base'].isin(pref_rel)
+            blank |= missing_answer(current_df, 'religion_base')
+        if pref_seriousness:
+            keep &= current_df['religion_seriousness'].isin(pref_seriousness)
+            blank |= missing_answer(current_df, 'religion_seriousness')
+        current_df = narrow("Religion / Beliefs", keep_with_blanks(keep, blank), blank)
 
     # 10. Education
     if pref_edu:
-        current_df = current_df[current_df['edu_category'].isin(pref_edu)]
-    funnel_steps.append(("Education", len(current_df)))
+        keep = current_df['edu_category'].isin(pref_edu)
+        blank = missing_answer(current_df, 'edu_category')
+        current_df = narrow("Education", keep_with_blanks(keep, blank), blank)
 
     # 11. Pets
-    if pref_pets == "Must Like/Have Dogs":
-        current_df = current_df[current_df['likes_dogs'] == True]
-    elif pref_pets == "Must Like/Have Cats":
-        current_df = current_df[current_df['likes_cats'] == True]
-    elif pref_pets == "Must Like Both Dogs & Cats":
-        current_df = current_df[(current_df['likes_dogs'] == True) & (current_df['likes_cats'] == True)]
-    funnel_steps.append(("Pet Preference", len(current_df)))
+    if pref_pets != "No Preference":
+        pet_columns = {
+            "Must Like/Have Dogs": ['likes_dogs'],
+            "Must Like/Have Cats": ['likes_cats'],
+            "Must Like Both Dogs & Cats": ['likes_dogs', 'likes_cats'],
+        }[pref_pets]
+        keep = current_df[pet_columns[0]].eq(True)
+        blank = missing_answer(current_df, pet_columns[0])
+        for column in pet_columns[1:]:
+            keep &= current_df[column].eq(True)
+            blank |= missing_answer(current_df, column)
+        current_df = narrow("Pet Preference", keep_with_blanks(keep, blank), blank)
 
     # 12. Location
     if pref_city != "All Bay Area":
-        current_df = current_df[current_df['city'] == pref_city]
-    funnel_steps.append(("Location", len(current_df)))
+        keep = current_df['city'].eq(pref_city)
+        blank = missing_answer(current_df, 'city')
+        current_df = narrow("Location", keep_with_blanks(keep, blank), blank)
 
     # Compute Statistics
     final_matches = len(current_df)
@@ -486,7 +583,7 @@ if mode == "Match Calculator (Reality Check)":
         - **Match Probability (%)**: Calculated as `(Matching Profiles / Total {TOTAL_PROFILES:,} Profiles) × 100`.
         - **Odds of a Match ("1 in X")**: The reciprocal of the match probability (`Total Profiles / Matching Profiles`). For instance, if 0.5% of profiles match, the odds are `1 in 200`.
         - **Estimated Bay Area Singles**: According to the 2012 U.S. Census Bureau American Community Survey, the 9-county San Francisco Bay Area had roughly **{real_world_pool:,} unmarried adult residents**. Multiplying this population by your match probability gives a realistic real-world estimate of individuals fitting your criteria.
-        - **Dealbreaker Funnel**: Sequentially applies each criterion and measures how many candidates remain at each stage, as well as the marginal percentage dropped.
+        - **Dealbreaker Funnel**: Sequentially applies each criterion and measures how many candidates remain at each stage, as well as the marginal percentage dropped. Every criterion applies the same rule to an unanswered question — by default it fails the criterion — and each step also reports how much of its attrition came from blank answers rather than real mismatches.
         """)
 
     # ---------------------------------------------------------
@@ -498,12 +595,14 @@ if mode == "Match Calculator (Reality Check)":
         st.markdown("#### The Dealbreaker Funnel")
         st.caption("Attrition across consecutive filters:")
 
-        funnel_df = pd.DataFrame(funnel_steps, columns=["Step", "Remaining"])
-        
+        funnel_df = pd.DataFrame(funnel_steps, columns=["Step", "Remaining", "Blanks"])
+
         # Calculate percentage drop at each step
         funnel_df["Drop"] = funnel_df["Remaining"].shift(1) - funnel_df["Remaining"]
         funnel_df["Drop_Pct"] = (funnel_df["Drop"] / funnel_df["Remaining"].shift(1)) * 100
         funnel_df["Drop_Pct"] = funnel_df["Drop_Pct"].fillna(0)
+
+        total_blanks = int(funnel_df["Blanks"].sum())
 
         fig_funnel = go.Figure(go.Funnel(
             y=funnel_df["Step"],
@@ -523,18 +622,37 @@ if mode == "Match Calculator (Reality Check)":
         )
         st.plotly_chart(fig_funnel, use_container_width=True)
 
+        if pref_count_blanks:
+            st.caption(
+                "Every criterion is judged the same way: a candidate who left a question "
+                "blank is kept rather than dropped."
+            )
+        elif total_blanks:
+            st.caption(
+                f"{total_blanks:,} candidates were removed because they never answered the "
+                "question behind a filter, not because they gave the wrong answer. Tick "
+                "*\"Count profiles that left a question blank\"* to keep them."
+            )
+
     with f_col2:
         st.markdown("#### Dealbreaker Breakdown")
         st.caption("Largest single factor reducing candidates:")
 
+        def attribution(row) -> str:
+            """Say how much of a removal was unanswered questions rather than mismatches."""
+            blanks = int(row['Blanks'])
+            if blanks == 0:
+                return ""
+            return f", {blanks:,} of them unanswered"
+
         drops = funnel_df[funnel_df["Drop"] > 0].sort_values(by="Drop_Pct", ascending=False)
         if not drops.empty:
             biggest = drops.iloc[0]
-            st.warning(f"**Biggest Bottleneck: {biggest['Step']}**\n\nEliminated **{biggest['Drop_Pct']:.1f}%** ({int(biggest['Drop']):,} candidates) of the remaining pool.")
+            st.warning(f"**Biggest Bottleneck: {biggest['Step']}**\n\nEliminated **{biggest['Drop_Pct']:.1f}%** ({int(biggest['Drop']):,} candidates) of the remaining pool{attribution(biggest)}.")
             
             st.markdown("##### Other Major Reductions:")
             for idx, row in drops.iloc[1:5].iterrows():
-                st.markdown(f"- **{row['Step']}**: eliminated **{row['Drop_Pct']:.1f}%** ({int(row['Drop']):,} candidates)")
+                st.markdown(f"- **{row['Step']}**: eliminated **{row['Drop_Pct']:.1f}%** ({int(row['Drop']):,} candidates){attribution(row)}")
         else:
             st.info("No single filter eliminated candidates; your criteria match everyone in this pool.")
 
@@ -855,16 +973,53 @@ elif mode == "Smoking Predictor (Live Model)":
         else:
             st.info(f"Feature attributions are generated for linear models. Currently running {selected_model_name}.")
 
-        st.markdown("""
+        # These numbers come from the model that was actually trained for this run, not
+        # from a write-up, so they stay true on either dataset.
+        drug_rates, drug_counts = answer_rates(df_raw, "drugs")
+        impact_df = suite["feature_impact_df"]
+        sometimes_coef = model_coefficient(impact_df, "drugs_sometimes")
+        blank_coef = model_coefficient(impact_df, "drugs_unspecified")
+        age_coef = model_coefficient(impact_df, "age")
+        never_rate = drug_rates.get("never", float("nan"))
+        blank_rate = drug_rates.get("unspecified", float("nan"))
+        blank_profiles = drug_counts.get("unspecified", 0)
+
+        insight_items = []
+        if sometimes_coef is not None:
+            insight_items.append(
+                "<li><strong>Recreational drugs:</strong> the strongest positive coefficient in "
+                "the balanced model. Reporting occasional use (<code>drugs_sometimes</code>) "
+                f"multiplies the odds of being labelled a smoker by about "
+                f"{np.exp(sometimes_coef):.1f}\u00d7 (log-odds {sometimes_coef:+.2f}).</li>"
+            )
+        if blank_coef is not None:
+            insight_items.append(
+                "<li><strong>An unanswered question is signal, not noise:</strong> leaving the "
+                f"drugs question blank sits at {blank_coef:+.2f} log-odds. Profiles that "
+                f"skipped it smoke at {blank_rate:.1%}, against {never_rate:.1%} for those who "
+                f"answered <code>never</code> ({blank_profiles:,} profiles in this data).</li>"
+            )
+        if age_coef is not None:
+            insight_items.append(
+                "<li><strong>Age:</strong> "
+                f"{age_coef:+.3f} log-odds per year \u2014 small enough that age is doing almost "
+                "no work here, which is worth knowing before leaning on the model's age "
+                "behaviour.</li>"
+            )
+
+        st.markdown(
+            """
         <div class="callout-box" style="margin-top: 1rem;">
-            <strong>💡 Key ML Insight for Recruiters & Analysts:</strong>
+            <strong>💡 What is actually driving these predictions:</strong>
             <ul style="margin-top: 0.4rem; margin-bottom: 0.2rem; padding-left: 1.2rem; font-size: 0.88rem; line-height: 1.5;">
-                <li><strong>Recreational Drugs:</strong> The single strongest positive coefficient. Even occasional drug use (<code>drugs_sometimes</code>) quadruples the odds of smoking (log-odds impact ~ +1.38).</li>
-                <li><strong>"Unspecified" Bug Fix:</strong> Leaving the drugs question blank produces a positive log-odds shift (+0.72), capturing that profiles withholding an answer smoked at 23.1% (nearly double the 12.4% rate of self-reported 'never').</li>
-                <li><strong>Age:</strong> Possesses a subtle dampening effect (-0.04 log-odds per year), reflecting that younger Bay Area singles in 2012 were slightly more prone to smoking.</li>
+            """
+            + "".join(insight_items)
+            + """
             </ul>
         </div>
-        """, unsafe_allow_html=True)
+        """,
+            unsafe_allow_html=True,
+        )
 
 # ---------------------------------------------------------
 # TAB 3: MODEL STUDIO & CODE BREAKDOWN
@@ -878,24 +1033,33 @@ elif mode == "Model Studio & Code Breakdown":
 
     suite = get_cached_model_suite()
     metrics = suite["metrics"]
+    base_rate = float(suite["base_rate"])
+    plain = metrics["Logistic Regression (Unweighted)"]
+    balanced = metrics["Logistic Regression (Balanced)"]
+    # Kept in a variable: an f-string expression reusing the delimiter's quote type is
+    # only legal from Python 3.12, and this file runs on the Cloud's Python too.
+    baseline = metrics["Baseline (Always 'No')"]
+    test_rows = int(suite["X_test_shape"][0])
+    train_rows = int(suite["X_train_shape"][0])
+    misses_share = 1 - plain["recall"]
 
-    # 1. The 80.6% Accuracy Trap Overview
-    st.markdown("### 1. The 80.6% Accuracy Trap")
+    # 1. The accuracy trap
+    st.markdown(f"### 1. The {1 - base_rate:.1%} Accuracy Trap")
     st.caption("Why headline accuracy is a dangerous metric on imbalanced real-world data.")
 
     m_col1, m_col2, m_col3, m_col4 = st.columns(4)
     with m_col1:
-        st.markdown("""
+        st.markdown(f"""
         <div class="metric-card">
-            <div class="metric-number">80.6%</div>
+            <div class="metric-number">{1 - base_rate:.1%}</div>
             <div class="metric-label">Non-Smoker Base Rate</div>
             <div class="metric-sub">Majority Class (Class 0)</div>
         </div>
         """, unsafe_allow_html=True)
     with m_col2:
-        st.markdown("""
+        st.markdown(f"""
         <div class="metric-card">
-            <div class="metric-number">19.4%</div>
+            <div class="metric-number">{base_rate:.1%}</div>
             <div class="metric-label">Smoker Base Rate</div>
             <div class="metric-sub">Minority Class (Class 1)</div>
         </div>
@@ -903,32 +1067,36 @@ elif mode == "Model Studio & Code Breakdown":
     with m_col3:
         st.markdown(f"""
         <div class="metric-card">
-            <div class="metric-number" style="color: #94a3b8;">0.0%</div>
-            <div class="metric-label">Baseline Smoker Recall</div>
-            <div class="metric-sub">Misses 100% of all smokers</div>
+            <div class="metric-number" style="color: #94a3b8;">{baseline['accuracy']:.1%}</div>
+            <div class="metric-label">Baseline Accuracy</div>
+            <div class="metric-sub">Scores this while learning nothing at all</div>
         </div>
         """, unsafe_allow_html=True)
     with m_col4:
         st.markdown(f"""
         <div class="metric-card">
-            <div class="metric-number" style="color: #34d399;">{metrics['Logistic Regression (Balanced)']['recall']:.1%}</div>
+            <div class="metric-number" style="color: #34d399;">{balanced['recall']:.1%}</div>
             <div class="metric-label">Balanced Model Recall</div>
-            <div class="metric-sub">+45% lift in detected smokers</div>
+            <div class="metric-sub">+{(balanced['recall'] - plain['recall']) * 100:.0f} points over the unweighted model</div>
         </div>
         """, unsafe_allow_html=True)
 
-    st.markdown("""
+    st.markdown(f"""
     <div class="callout-box" style="margin-top: 1.2rem;">
-        <strong>⚠️ The Accuracy Trap Explained:</strong> Because 80.6% of people in the dataset do not smoke, a trivial dummy model that predicts <em>"does not smoke"</em> for every single person achieves <strong>80.6% accuracy without learning anything</strong>.
-        An unweighted Logistic Regression scores <strong>81.7% accuracy</strong>, which looks like an achievement on paper — but it fails in practice because it achieves only <strong>18.5% recall</strong> (missing over 81% of actual smokers).
+        <strong>⚠️ The Accuracy Trap Explained:</strong> Because {1 - base_rate:.1%} of people in this dataset do not smoke, a dummy model that predicts <em>"does not smoke"</em> for every single person already scores <strong>{baseline['accuracy']:.1%}</strong> without learning anything.
+        An unweighted Logistic Regression scores <strong>{plain['accuracy']:.1%} accuracy</strong>, which looks like an achievement on paper — but it catches only <strong>{plain['recall']:.1%} of actual smokers</strong>, missing {misses_share:.0%} of them.
         <br><br>
-        By re-fitting with <code>class_weight="balanced"</code>, the loss function penalizes false negatives on smokers proportionally ($w_1 \\approx 2.58$). <strong>Overall accuracy drops to 71.2%, but recall surges to 63.9%</strong>. Accuracy went down, and the model became immensely more useful in the real world.
+        Re-fitting with <code>class_weight="balanced"</code> re-weights the classes by roughly {1 / (2 * base_rate):.2f} for smokers against {1 / (2 * (1 - base_rate)):.2f} for non-smokers, so a missed smoker costs several times a false alarm. <strong>Accuracy settles at {balanced['accuracy']:.1%} while recall climbs to {balanced['recall']:.1%}</strong> — the headline number gets worse and the model gets more useful.
     </div>
     """, unsafe_allow_html=True)
 
     # 2. Benchmark Comparison Table
-    st.markdown("### 2. Production Model Benchmark Comparison")
-    st.caption("All models evaluated on the identical stratified 20% held-out test split.")
+    st.markdown("### 2. Model Benchmark Comparison")
+    st.caption(
+        f"All five models are trained on the same {train_rows:,} profiles and evaluated on "
+        f"the same stratified 20% held-out split ({test_rows:,} profiles), on whichever "
+        f"dataset this instance loaded."
+    )
 
     benchmark_rows = []
     for m_name, m_vals in metrics.items():
@@ -1083,30 +1251,47 @@ elif mode == "Model Studio & Code Breakdown":
         st.plotly_chart(fig_rf, use_container_width=True)
 
     # 5. Production Engineering Architecture & Code Deep Dives
-    st.markdown("### 5. Production Engineering Architecture & Code Breakdown")
+    st.markdown("### 5. Pipeline Architecture & Code Breakdown")
 
     with st.expander("🛠️ Data Engineering: Fixing the 'Did Not Answer' Flaw", expanded=False):
-        st.markdown("""
-        In the exploratory notebook, categorical missing values were left as `NaN` and dummy-encoded with `drop_first=True`.
-        This caused missing entries to encode as all-zeros, **silently folding 'did not answer' into 'never' (the dropped reference category)**.
-        
-        **The Production Fix in `smoking_model.py`:**
-        ```python
-        # Explicit category preserves the predictive signal of question avoidance
-        drugs_series = df_clean["drugs"].apply(lambda x: x if x in DRUG_OPTIONS else "unspecified")
-        ```
-        Analysis revealed profiles withholding drug usage smoked at **23.1%**, nearly double the **12.4%** rate of profiles reporting `never`. Treating missing as `"unspecified"` recovered this critical predictive signal.
-        """)
+        drug_rates, drug_counts = answer_rates(df_raw, "drugs")
+        st.markdown(f"""
+In the exploratory notebook, categorical missing values were left as `NaN` and dummy-encoded with `drop_first=True`.
+This caused missing entries to encode as all-zeros, **silently folding 'did not answer' into 'never' (the dropped reference category)**.
+Two rows that mean opposite things became one row of numbers.
+
+**The fix in `smoking_model.py`:**
+```python
+# An explicit category preserves the signal that a question was avoided
+drugs_series = df_clean["drugs"].apply(lambda x: x if x in DRUG_OPTIONS else "unspecified")
+```
+
+On the dataset this instance loaded, profiles that withheld their drug usage smoke at
+**{drug_rates.get('unspecified', float('nan')):.1%}** ({drug_counts.get('unspecified', 0):,} profiles),
+against **{drug_rates.get('never', float('nan')):.1%}** for those who answered `never`.
+The notebook's encoding made that distinction unavailable to the model.
+""")
 
     with st.expander("📐 Mathematical Formulation: Balanced Cross-Entropy Loss", expanded=False):
+        # Plain string, not an f-string: the LaTeX braces below would otherwise be read
+        # as replacement fields.
         st.markdown("""
         For class-balanced Logistic Regression, scikit-learn weights each training sample $i$ belonging to class $j \\in \\{0, 1\\}$:
         $$\\text{Loss} = - \\sum_{i=1}^N w_{y_i} \\left[ y_i \\log(p_i) + (1 - y_i) \\log(1 - p_i) \\right]$$
         where the class weight is computed as:
         $$w_j = \\frac{N}{2 \\cdot N_j}$$
-        With $N = 7,264$ training rows, $N_0 = 5,857$ non-smokers ($w_0 = 0.62$) and $N_1 = 1,407$ smokers ($w_1 = 2.58$).
-        This forces the optimizer to treat missing a smoker as **4.16x more costly** than a false positive on a non-smoker.
         """)
+        # The weights are derived from the class balance of the split that was actually
+        # used, so this sentence survives a change of dataset.
+        st.markdown(
+            f"With the {train_rows:,} training rows this model was fitted on and a smoker "
+            f"share of {base_rate:.1%}, balanced weighting comes out at "
+            f"$w_0 \\approx {1 / (2 * (1 - base_rate)):.2f}$ for non-smokers and "
+            f"$w_1 \\approx {1 / (2 * base_rate):.2f}$ for smokers, so the optimizer treats a "
+            f"missed smoker as roughly "
+            f"**{(1 / (2 * base_rate)) / (1 / (2 * (1 - base_rate))):.2f}x more costly** than a "
+            "false positive on a non-smoker."
+        )
 
     with st.expander("💻 Modular Pipeline Code (`smoking_model.py`)", expanded=False):
         st.markdown("""
