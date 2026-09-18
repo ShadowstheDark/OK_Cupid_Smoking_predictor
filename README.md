@@ -112,85 +112,91 @@ Deep links open the app on a specific mode:
 
 | URL | Opens |
 |---|---|
-| `/?page=calculator` | Match Calculator |
+| `/?page=calculator` | Match Calculator (Reality Check) |
+| `/?page=predictor` | Smoking Predictor (Live ML Inference) |
+| `/?page=model_studio` | Model Studio & Technical Breakdown |
 | `/?page=studio` | Bay Area 2012 Data Studio |
 | `/?page=detective` | Profile Detective |
 
 ---
 
-## Deploy your own
+## Production ML Pipeline & Architecture
 
-1. Push this repository to GitHub.
-2. Go to <https://share.streamlit.io> and sign in with GitHub.
-3. **New app** → pick the repository, branch `main`, main file path `app.py`.
-4. **Deploy.** First build takes a couple of minutes.
-5. Copy the resulting `https://<name>.streamlit.app` URL into the badge at the top of
-   this file.
+The machine learning pipeline is fully modularized in `smoking_model.py` and decoupled from Streamlit:
 
-The sample data is committed specifically so this works with no extra setup — Streamlit
-Community Cloud will not have your local `data/full/`.
+```
+                      ┌─────────────────────────────┐
+                      │    OkCupid 2012 Dataset     │
+                      │ (profiles.csv / sample.csv) │
+                      └──────────────┬──────────────┘
+                                     │
+                        data_loader.load_data()
+                                     │
+                                     ▼
+                      ┌─────────────────────────────┐
+                      │    smoking_model.py         │
+                      │  • "unspecified" bug fix    │
+                      │  • One-hot schema lock      │
+                      │  • Stratified 80/20 split   │
+                      └──────────────┬──────────────┘
+                                     │
+        ┌────────────────────────────┼────────────────────────────┐
+        ▼                            ▼                            ▼
+┌──────────────────┐       ┌──────────────────┐        ┌───────────────────────┐
+│ Logistic Regress.│       │  Random Forest   │        │ HistGradientBoosting  │
+│    (Balanced)    │       │   (max_depth=5)  │        │   (LightGBM-style)    │
+│  Log-odds & ORs  │       │ Gini Importances │        │    F1: 0.471          │
+└────────┬─────────┘       └─────────┬────────┘        └───────────┬───────────┘
+         │                           │                             │
+         └───────────────────────────┼─────────────────────────────┘
+                                     ▼
+                   ┌───────────────────────────────────┐
+                   │       Live Inference Engine       │
+                   │  • Real-time probability scoring  │
+                   │  • Risk tiering (Low to High)     │
+                   │  • Threshold sensitivity analysis │
+                   │  • Log-odds feature attributions  │
+                   └─────────────────┬─────────────────┘
+                                     │
+                                     ▼
+                   ┌───────────────────────────────────┐
+                   │           app.py (UI)             │
+                   │  Mode 2: Live Smoking Predictor   │
+                   │  Mode 3: Model Studio & Breakdown │
+                   └───────────────────────────────────┘
+```
 
 ---
 
-## Project structure
+## Automated Test Suite
 
-```
-.
-├── app.py                              # the Streamlit app: 3 modes, custom CSS
-├── data_loader.py                      # loading, cleaning and derived columns
-├── run_app.bat                         # Windows launcher
-├── requirements.txt                    # app dependencies (pinned)
-├── requirements-notebook.txt           # + scikit-learn, for the analysis
-├── .streamlit/config.toml              # dark theme matching the CSS
-├── scripts/
-│   └── build_sample.py                 # regenerates the committed sample (stdlib only)
-├── data/
-│   ├── sample_profiles.csv             # committed, 10,000 rows
-│   └── full/                           # git-ignored, drop the full file here
-├── notebooks/
-│   └── okcupid-smoking-prediction.ipynb
-├── assets/                             # screenshots
-├── DATA.md                             # provenance, schema, ethics
-└── LICENSE                             # MIT — code only, not the data
+A complete test suite is maintained under `tests/` and run automatically on every push via **GitHub Actions** (`.github/workflows/ci.yml`):
+
+```bash
+# Run all 25 unit and integration tests
+pytest tests/ -v
 ```
 
-### How the app is built
-
-A dashboard is only as trustworthy as the numbers behind it, so the details that
-matter are explicit rather than hidden:
-
-- **One source of truth for derived data.** `data_loader.py` owns every cleaning
-  decision and exposes `EDUCATION_CATEGORIES` — the UI builds its filter dropdowns
-  from that constant, so the two can never drift apart.
-- **No hard-coded totals.** Row counts are read from whatever dataset loaded, so the
-  sample and the full extract are both self-consistent.
-- **Stratified sampling, on purpose.** The sample is drawn proportionally within each
-  `(sex, smokes)` group so the demographics *and* the 19% smoker base rate survive;
-  a plain random sample would distort exactly the numbers the notebook depends on.
-- **A friendly failure mode.** A missing dataset produces an instruction, not a
-  traceback.
+- `tests/test_data_loader.py`: Sanitization, HTML regex stripping, pet/religion/education parsing, and dataset integrity.
+- `tests/test_smoking_model.py`: Schema enforcement, base rate verification, accuracy trap baseline tests, balanced model recall validation, and boundary-condition inference.
 
 ---
 
-## Tech
+## Key Improvements & Bug Fixes
 
-Streamlit · pandas · NumPy · Plotly · scikit-learn · custom CSS
+- **Model in Production**: Added `smoking_model.py` and integrated live inference into the Streamlit app. Users can select personas, tweak custom traits, adjust decision thresholds, and inspect real-time log-odds feature attributions.
+- **Fixed "Did Not Answer" Conflation**: In the exploratory notebook, missing categorical values encoded as all-zeros, conflating "did not answer" with "never". Profiles withholding drug answers smoked at **23.1%** (nearly double the **12.4%** rate of self-reported `never`). Treating missing values as explicit `"unspecified"` recovered this predictive signal.
+- **Modern Tree Booster**: Added `HistGradientBoostingClassifier` (scikit-learn's native LightGBM-style booster), achieving an F1 score of **0.471** on the held-out test split.
+- **Full Precision-Recall Calibration**: Added interactive threshold sensitivity curves allowing users to explore how changing the decision cutoff trades off Precision vs Recall.
+- **Production Engineering**: Zero-downtime `@st.cache_resource` caching, full type hints, and continuous integration testing.
 
 ---
 
 ## What I'd do next
 
-- **Put the model in the app.** The two halves of this project currently sit next to
-  each other rather than talking: the notebook trains a smoking model that the
-  interface never surfaces. A fourth mode that scores a chosen profile live would
-  join them up.
-- **Treat "did not answer" as its own level.** 11,317 rows have no drug answer and
-  are currently encoded identically to "never", which is the weakest point in the
-  feature set.
-- **Use the text.** Ten columns of essays were never touched, and if anything in this
-  dataset carries signal beyond the structured fields, it is there.
-- **Report precision-recall curves** so the operating point is chosen deliberately,
-  rather than by picking between two fitted models after the fact.
+- **NLP on Essay Texts**: Extract TF-IDF n-grams or embeddings from the 10 essay prompts to test whether vocabulary correlates with smoking habits beyond demographic labels.
+- **Fairness & Subgroup Audits**: Measure whether balanced classification error rates vary across gender, age cohorts, or orientation.
+- **Model Monitoring & Drift Detection**: Add latency and distribution drift tracking for simulated production traffic.
 
 ---
 
@@ -207,3 +213,4 @@ provenance, schema and rebuild instructions are in **[DATA.md](DATA.md)**.
 ## Licence
 
 MIT for the code — see [LICENSE](LICENSE). The dataset is excluded from that licence.
+

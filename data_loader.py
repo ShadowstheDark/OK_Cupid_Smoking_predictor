@@ -1,3 +1,4 @@
+from typing import Dict, Any, Optional, List
 import os
 import re
 import html
@@ -20,7 +21,7 @@ FULL_DATASET_ROWS = 59946
 
 # Canonical education buckets produced by clean_education_category(). The UI
 # builds its filter options from this list so the two can never drift apart.
-EDUCATION_CATEGORIES = [
+EDUCATION_CATEGORIES: List[str] = [
     "College Graduate",
     "Master's Degree",
     "Post-Graduate / Ph.D",
@@ -32,7 +33,7 @@ EDUCATION_CATEGORIES = [
 ]
 
 
-def get_csv_path():
+def get_csv_path() -> str:
     """Return the dataset to load, preferring the full extract over the sample."""
     override = os.environ.get("OKCUPID_CSV")
     candidates = [override] if override else []
@@ -50,11 +51,11 @@ def get_csv_path():
     )
 
 
-def using_sample():
+def using_sample() -> bool:
     """True when we are running on the committed demo sample, not the full extract."""
     return os.path.abspath(get_csv_path()) == os.path.abspath(SAMPLE_DATASET_PATH)
 
-def clean_html(raw_text):
+def clean_html(raw_text: Any) -> str:
     if not isinstance(raw_text, str) or pd.isna(raw_text):
         return ""
     # Unescape HTML entities (&amp;, &rsquo;, etc.)
@@ -67,7 +68,7 @@ def clean_html(raw_text):
     text = re.sub(r'\n{3,}', '\n\n', text)
     return text.strip()
 
-def extract_religion_base(val):
+def extract_religion_base(val: Any) -> str:
     if pd.isna(val) or not isinstance(val, str):
         return "unspecified"
     val = val.lower().strip()
@@ -78,7 +79,7 @@ def extract_religion_base(val):
         return "other"
     return "unspecified"
 
-def extract_religion_seriousness(val):
+def extract_religion_seriousness(val: Any) -> str:
     if pd.isna(val) or not isinstance(val, str):
         return "unspecified"
     val = val.lower().strip()
@@ -94,7 +95,7 @@ def extract_religion_seriousness(val):
         return "matter-of-fact"
     return "unspecified"
 
-def extract_city(val):
+def extract_city(val: Any) -> str:
     if pd.isna(val) or not isinstance(val, str):
         return "other"
     parts = [p.strip() for p in val.lower().split(",")]
@@ -102,7 +103,7 @@ def extract_city(val):
         return parts[0]
     return "other"
 
-def extract_pets(val):
+def extract_pets(val: Any) -> Dict[str, Optional[bool]]:
     if pd.isna(val) or not isinstance(val, str):
         return {"likes_dogs": None, "likes_cats": None, "has_dogs": None, "has_cats": None}
     val = val.lower()
@@ -113,7 +114,7 @@ def extract_pets(val):
         "has_cats": "has cats" in val
     }
 
-def clean_education_category(val):
+def clean_education_category(val: Any) -> str:
     if pd.isna(val) or not isinstance(val, str):
         return "unspecified"
     val = val.lower().strip()
@@ -121,7 +122,7 @@ def clean_education_category(val):
         return "Post-Graduate / Ph.D"
     if "masters" in val or "master" in val:
         return "Master's Degree"
-    if "graduated from college" in val or "college/university" in val and "graduated" in val:
+    if "graduated from college" in val or ("college/university" in val and "graduated" in val):
         return "College Graduate"
     if "working on college" in val or "two-year college" in val:
         return "In College / Associate"
@@ -136,7 +137,7 @@ def clean_education_category(val):
         return "College Dropout"
     return "Other / In Progress"
 
-def load_data():
+def load_data() -> pd.DataFrame:
     csv_path = get_csv_path()
     df = pd.read_csv(csv_path)
 

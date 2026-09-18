@@ -10,12 +10,19 @@ from data_loader import (
     load_data,
     using_sample,
 )
+from smoking_model import (
+    DRUG_OPTIONS,
+    DRINK_OPTIONS,
+    BODY_TYPE_OPTIONS,
+    get_model_suite,
+    predict_single_profile,
+)
 
 # ---------------------------------------------------------
 # Page Configuration & Custom Theme
 # ---------------------------------------------------------
 st.set_page_config(
-    page_title="Cupid 2012 | California Dating Odds & Data Studio",
+    page_title="Cupid 2012 | Smoking Predictor & Bay Area Dating Studio",
     page_icon="💘",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -154,17 +161,32 @@ except FileNotFoundError as err:
 TOTAL_PROFILES = len(df_raw)
 IS_SAMPLE = using_sample()
 
+@st.cache_resource(show_spinner="Training ML models & benchmarking suite...")
+def get_cached_model_suite():
+    return get_model_suite()
+
+
 # ---------------------------------------------------------
 # Sidebar Navigation
 # ---------------------------------------------------------
 # Each mode is addressable, so a link can open straight into one of them:
-#   ?page=calculator   ?page=studio   ?page=detective
+#   ?page=calculator   ?page=predictor   ?page=model_studio   ?page=studio   ?page=detective
 PAGE_OPTIONS = [
     "Match Calculator (Reality Check)",
+    "Smoking Predictor (Live Model)",
+    "Model Studio & Code Breakdown",
     "Bay Area 2012 Data Studio",
     "Profile Detective",
 ]
-PAGE_SLUGS = {"calculator": 0, "studio": 1, "detective": 2}
+PAGE_SLUGS = {
+    "calculator": 0,
+    "predictor": 1,
+    "predict": 1,
+    "model_studio": 2,
+    "model": 2,
+    "studio": 3,
+    "detective": 4,
+}
 
 with st.sidebar:
     st.markdown("## OkCupid 2012 Analytics")
@@ -580,7 +602,523 @@ if mode == "Match Calculator (Reality Check)":
         st.warning("No sample profiles found for this combination of filters. Loosen some restrictions above.")
 
 # ---------------------------------------------------------
-# TAB 2: BAY AREA 2012 DATA STUDIO (THE WHOLE SHEBANG)
+# TAB 2: SMOKING PREDICTOR (LIVE MODEL)
+# ---------------------------------------------------------
+elif mode == "Smoking Predictor (Live Model)":
+    st.markdown('<div class="hero-title">Smoking Predictor: Live ML Inference</div>', unsafe_allow_html=True)
+    st.markdown(
+        '<div class="hero-subtitle">Real-time prediction of smoking behavior from demographic and lifestyle factors, powered by class-balanced machine learning.</div>',
+        unsafe_allow_html=True,
+    )
+
+    suite = get_cached_model_suite()
+
+    # Preset Profiles Quick-Loader
+    st.markdown("##### ⚡ Quick-Load Persona Presets")
+    col_p1, col_p2, col_p3, col_p4 = st.columns(4)
+    with col_p1:
+        if st.button("🏃 Clean Living Athlete", use_container_width=True):
+            st.session_state["pred_age"] = 28
+            st.session_state["pred_drugs"] = "never"
+            st.session_state["pred_drinks"] = "not at all"
+            st.session_state["pred_body"] = "athletic"
+            st.session_state["actual_smoke_label"] = None
+            st.rerun()
+    with col_p2:
+        if st.button("🍸 Weekend Socialite", use_container_width=True):
+            st.session_state["pred_age"] = 26
+            st.session_state["pred_drugs"] = "never"
+            st.session_state["pred_drinks"] = "socially"
+            st.session_state["pred_body"] = "fit"
+            st.session_state["actual_smoke_label"] = None
+            st.rerun()
+    with col_p3:
+        if st.button("🎉 Party Regular", use_container_width=True):
+            st.session_state["pred_age"] = 23
+            st.session_state["pred_drugs"] = "sometimes"
+            st.session_state["pred_drinks"] = "often"
+            st.session_state["pred_body"] = "thin"
+            st.session_state["actual_smoke_label"] = None
+            st.rerun()
+    with col_p4:
+        if st.button("🎲 Random 2012 Profile", use_container_width=True):
+            known_profiles = df_raw[df_raw["smokes"].isin(["no", "sometimes", "when drinking", "yes", "trying to quit"])]
+            sample_row = known_profiles.sample(n=1).iloc[0]
+            st.session_state["pred_age"] = int(sample_row["age"]) if not pd.isna(sample_row["age"]) else 30
+            st.session_state["pred_drugs"] = sample_row["drugs"] if sample_row["drugs"] in DRUG_OPTIONS else "unspecified"
+            st.session_state["pred_drinks"] = sample_row["drinks"] if sample_row["drinks"] in DRINK_OPTIONS else "unspecified"
+            st.session_state["pred_body"] = sample_row["body_type"] if sample_row["body_type"] in BODY_TYPE_OPTIONS else "unspecified"
+            st.session_state["actual_smoke_label"] = sample_row["smokes"]
+            st.session_state["actual_bio"] = clean_html(sample_row.get("essay0", ""))
+            st.session_state["actual_gender"] = sample_row.get("sex", "unknown")
+            st.rerun()
+
+    # Form Controls
+    with st.expander("Candidate Profile & Model Controls", expanded=True):
+        fcol1, fcol2, fcol3 = st.columns(3)
+
+        default_age = st.session_state.get("pred_age", 27)
+        default_drugs = st.session_state.get("pred_drugs", "never")
+        default_drinks = st.session_state.get("pred_drinks", "socially")
+        default_body = st.session_state.get("pred_body", "average")
+
+        with fcol1:
+            st.markdown("##### Basic Traits")
+            input_age = st.slider("Age:", min_value=18, max_value=75, value=default_age, step=1)
+            drugs_idx = DRUG_OPTIONS.index(default_drugs) if default_drugs in DRUG_OPTIONS else 0
+            input_drugs = st.selectbox(
+                "Drug Habits:",
+                DRUG_OPTIONS,
+                index=drugs_idx,
+                help="Recreational drug usage. 'unspecified' fixes the bug where missing was conflated with 'never'."
+            )
+
+        with fcol2:
+            st.markdown("##### Lifestyle & Body")
+            drinks_idx = DRINK_OPTIONS.index(default_drinks) if default_drinks in DRINK_OPTIONS else 0
+            input_drinks = st.selectbox("Drinking Frequency:", DRINK_OPTIONS, index=drinks_idx)
+
+            body_idx = BODY_TYPE_OPTIONS.index(default_body) if default_body in BODY_TYPE_OPTIONS else 0
+            input_body = st.selectbox("Body Type:", BODY_TYPE_OPTIONS, index=body_idx)
+
+        with fcol3:
+            st.markdown("##### Inference Configuration")
+            model_choices = [
+                "Logistic Regression (Balanced)",
+                "HistGradientBoosting (Balanced)",
+                "Random Forest (Balanced, max_depth=5)",
+                "Logistic Regression (Unweighted)",
+            ]
+            selected_model_name = st.selectbox(
+                "Inference Engine:",
+                model_choices,
+                index=0,
+                help="Select between balanced models (which fix the 80.6% base-rate trap) and the unweighted model."
+            )
+            input_threshold = st.slider(
+                "Decision Threshold:",
+                min_value=0.10,
+                max_value=0.90,
+                value=0.50,
+                step=0.05,
+                help="Probability cutoff for positive classification. Lowering the threshold catches more smokers (higher recall) at the cost of more false positives."
+            )
+
+    profile_dict = {
+        "age": input_age,
+        "drugs": input_drugs,
+        "drinks": input_drinks,
+        "body_type": input_body,
+    }
+
+    result = predict_single_profile(
+        profile_dict,
+        model_name=selected_model_name,
+        threshold=input_threshold,
+        suite=suite,
+    )
+
+    # Display Prediction Dashboard
+    st.markdown("### Prediction Results & Interpretability")
+    res_col1, res_col2 = st.columns([5, 7])
+
+    with res_col1:
+        is_smoker = result["prediction"] == 1
+        badge_cls = "badge-pink" if is_smoker else "badge-emerald"
+        status_text = "Smoker / Social Smoker" if is_smoker else "Non-Smoker"
+
+        st.markdown(f"""
+        <div class="metric-card" style="border-left: 4px solid {result['risk_color']}; text-align: left; padding: 1.5rem;">
+            <div style="display: flex; justify-content: space-between; align-items: center;">
+                <span class="badge {badge_cls}" style="font-size: 0.9rem; padding: 0.4rem 0.9rem;">
+                    {status_text}
+                </span>
+                <span style="font-size: 0.85rem; font-weight: 600; color: {result['risk_color']};">
+                    ● {result['risk_level']}
+                </span>
+            </div>
+            <div style="margin-top: 1rem;">
+                <div style="font-size: 0.9rem; color: #94a3b8;">Predicted Smoker Probability</div>
+                <div class="metric-number" style="color: {result['risk_color']}; font-size: 3.2rem;">
+                    {result['probability_percent']}%
+                </div>
+            </div>
+            <div style="margin-top: 0.5rem; font-size: 0.9rem; color: #cbd5e1;">
+                Odds relative to 2012 Bay Area population: 
+                <strong style="color: #f1f5f9;">{result['relative_odds_vs_population']}x</strong>
+            </div>
+            <div style="margin-top: 0.5rem; font-size: 0.82rem; color: #64748b;">
+                Decision Threshold: {input_threshold:.2f} (Model: {selected_model_name})
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        # Plotly Risk Gauge
+        fig_gauge = go.Figure(go.Indicator(
+            mode="gauge+number",
+            value=result["probability_percent"],
+            domain={'x': [0, 1], 'y': [0, 1]},
+            title={'text': "Smoking Risk Meter (%)", 'font': {'size': 16, 'color': '#cbd5e1'}},
+            number={'suffix': "%", 'font': {'color': result['risk_color'], 'size': 28}},
+            gauge={
+                'axis': {'range': [0, 100], 'tickwidth': 1, 'tickcolor': "#475569"},
+                'bar': {'color': result['risk_color']},
+                'bgcolor': "rgba(255,255,255,0.05)",
+                'borderwidth': 1,
+                'bordercolor': "#334155",
+                'steps': [
+                    {'range': [0, 30], 'color': "rgba(16, 185, 129, 0.2)"},
+                    {'range': [30, 60], 'color': "rgba(245, 158, 11, 0.2)"},
+                    {'range': [60, 100], 'color': "rgba(255, 42, 95, 0.2)"},
+                ],
+                'threshold': {
+                    'line': {'color': "#ffffff", 'width': 3},
+                    'thickness': 0.75,
+                    'value': input_threshold * 100
+                }
+            }
+        ))
+        fig_gauge.update_layout(
+            paper_bgcolor="rgba(0,0,0,0)",
+            plot_bgcolor="rgba(0,0,0,0)",
+            font={'color': "#f1f5f9"},
+            height=240,
+            margin=dict(l=20, r=20, t=40, b=10)
+        )
+        st.plotly_chart(fig_gauge, use_container_width=True)
+
+        # Ground truth validation if random profile was loaded
+        actual_label = st.session_state.get("actual_smoke_label")
+        if actual_label:
+            actual_is_smoker = actual_label in {"sometimes", "when drinking", "yes", "trying to quit"}
+            matched = (is_smoker == actual_is_smoker)
+            match_color = "#34d399" if matched else "#f87171"
+            match_str = "MATCH (Correct Prediction)" if matched else "MISMATCH (Model Error)"
+            actual_bio = st.session_state.get("actual_bio", "")
+            st.markdown(f"""
+            <div class="callout-box" style="border-color: {match_color}; background: rgba(0,0,0,0.3);">
+                <div style="font-weight: 700; color: {match_color};">
+                    🎯 2012 Profile Ground Truth: {match_str}
+                </div>
+                <div style="margin-top: 0.4rem; font-size: 0.9rem;">
+                    Actual self-reported smoking status: <strong>"{actual_label}"</strong>
+                </div>
+                {f'<div class="essay-snippet" style="margin-top: 0.6rem; font-size: 0.85rem;"><em>"{actual_bio[:280]}..."</em></div>' if actual_bio else ''}
+            </div>
+            """, unsafe_allow_html=True)
+
+    with res_col2:
+        st.markdown("##### 🔍 Feature Attribution: What Drove This Prediction?")
+        st.caption("Log-odds contribution of candidate traits relative to reference baselines.")
+
+        attributions = result.get("feature_attributions", [])
+        if attributions:
+            attr_df = pd.DataFrame(attributions)
+            # Exclude base intercept for readable feature comparison
+            attr_features = attr_df[attr_df["feature"] != "Baseline (Population Intercept)"].copy()
+
+            if len(attr_features) > 0:
+                attr_features["color"] = attr_features["log_odds_impact"].apply(
+                    lambda x: "#ff2a5f" if x > 0 else "#10b981"
+                )
+                attr_features = attr_features.sort_values(by="log_odds_impact", ascending=True)
+
+                fig_attr = px.bar(
+                    attr_features,
+                    x="log_odds_impact",
+                    y="feature",
+                    orientation="h",
+                    text="log_odds_impact",
+                    labels={"log_odds_impact": "Log-Odds Impact (β · x)", "feature": "Profile Trait"},
+                    color="log_odds_impact",
+                    color_continuous_scale=[[0, "#10b981"], [0.5, "#94a3b8"], [1, "#ff2a5f"]],
+                )
+                fig_attr.update_traces(
+                    texttemplate='%{text:+.2f}',
+                    textposition='outside',
+                    marker_line_color='rgba(255,255,255,0.2)',
+                    marker_line_width=1
+                )
+                fig_attr.update_layout(
+                    paper_bgcolor="rgba(0,0,0,0)",
+                    plot_bgcolor="rgba(0,0,0,0.1)",
+                    font=dict(color="#cbd5e1"),
+                    height=320,
+                    margin=dict(l=10, r=20, t=10, b=10),
+                    coloraxis_showscale=False,
+                    xaxis=dict(gridcolor="#23293e", zerolinecolor="#475569", zerolinewidth=1.5),
+                    yaxis=dict(gridcolor="#23293e"),
+                )
+                st.plotly_chart(fig_attr, use_container_width=True)
+            else:
+                st.info("All selected traits match the baseline reference categories (never drugs, socially drinks, average body).")
+        else:
+            st.info(f"Feature attributions are generated for linear models. Currently running {selected_model_name}.")
+
+        st.markdown("""
+        <div class="callout-box" style="margin-top: 1rem;">
+            <strong>💡 Key ML Insight for Recruiters & Analysts:</strong>
+            <ul style="margin-top: 0.4rem; margin-bottom: 0.2rem; padding-left: 1.2rem; font-size: 0.88rem; line-height: 1.5;">
+                <li><strong>Recreational Drugs:</strong> The single strongest positive coefficient. Even occasional drug use (<code>drugs_sometimes</code>) quadruples the odds of smoking (log-odds impact ~ +1.38).</li>
+                <li><strong>"Unspecified" Bug Fix:</strong> Leaving the drugs question blank produces a positive log-odds shift (+0.72), capturing that profiles withholding an answer smoked at 23.1% (nearly double the 12.4% rate of self-reported 'never').</li>
+                <li><strong>Age:</strong> Possesses a subtle dampening effect (-0.04 log-odds per year), reflecting that younger Bay Area singles in 2012 were slightly more prone to smoking.</li>
+            </ul>
+        </div>
+        """, unsafe_allow_html=True)
+
+# ---------------------------------------------------------
+# TAB 3: MODEL STUDIO & CODE BREAKDOWN
+# ---------------------------------------------------------
+elif mode == "Model Studio & Code Breakdown":
+    st.markdown('<div class="hero-title">Model Studio & Technical Breakdown</div>', unsafe_allow_html=True)
+    st.markdown(
+        '<div class="hero-subtitle">The 80.6% accuracy trap, class imbalance mitigation, confusion matrices, precision-recall trade-offs, and production ML architecture.</div>',
+        unsafe_allow_html=True,
+    )
+
+    suite = get_cached_model_suite()
+    metrics = suite["metrics"]
+
+    # 1. The 80.6% Accuracy Trap Overview
+    st.markdown("### 1. The 80.6% Accuracy Trap")
+    st.caption("Why headline accuracy is a dangerous metric on imbalanced real-world data.")
+
+    m_col1, m_col2, m_col3, m_col4 = st.columns(4)
+    with m_col1:
+        st.markdown("""
+        <div class="metric-card">
+            <div class="metric-number">80.6%</div>
+            <div class="metric-label">Non-Smoker Base Rate</div>
+            <div class="metric-sub">Majority Class (Class 0)</div>
+        </div>
+        """, unsafe_allow_html=True)
+    with m_col2:
+        st.markdown("""
+        <div class="metric-card">
+            <div class="metric-number">19.4%</div>
+            <div class="metric-label">Smoker Base Rate</div>
+            <div class="metric-sub">Minority Class (Class 1)</div>
+        </div>
+        """, unsafe_allow_html=True)
+    with m_col3:
+        st.markdown(f"""
+        <div class="metric-card">
+            <div class="metric-number" style="color: #94a3b8;">0.0%</div>
+            <div class="metric-label">Baseline Smoker Recall</div>
+            <div class="metric-sub">Misses 100% of all smokers</div>
+        </div>
+        """, unsafe_allow_html=True)
+    with m_col4:
+        st.markdown(f"""
+        <div class="metric-card">
+            <div class="metric-number" style="color: #34d399;">{metrics['Logistic Regression (Balanced)']['recall']:.1%}</div>
+            <div class="metric-label">Balanced Model Recall</div>
+            <div class="metric-sub">+45% lift in detected smokers</div>
+        </div>
+        """, unsafe_allow_html=True)
+
+    st.markdown("""
+    <div class="callout-box" style="margin-top: 1.2rem;">
+        <strong>⚠️ The Accuracy Trap Explained:</strong> Because 80.6% of people in the dataset do not smoke, a trivial dummy model that predicts <em>"does not smoke"</em> for every single person achieves <strong>80.6% accuracy without learning anything</strong>.
+        An unweighted Logistic Regression scores <strong>81.7% accuracy</strong>, which looks like an achievement on paper — but it fails in practice because it achieves only <strong>18.5% recall</strong> (missing over 81% of actual smokers).
+        <br><br>
+        By re-fitting with <code>class_weight="balanced"</code>, the loss function penalizes false negatives on smokers proportionally ($w_1 \\approx 2.58$). <strong>Overall accuracy drops to 71.2%, but recall surges to 63.9%</strong>. Accuracy went down, and the model became immensely more useful in the real world.
+    </div>
+    """, unsafe_allow_html=True)
+
+    # 2. Benchmark Comparison Table
+    st.markdown("### 2. Production Model Benchmark Comparison")
+    st.caption("All models evaluated on the identical stratified 20% held-out test split.")
+
+    benchmark_rows = []
+    for m_name, m_vals in metrics.items():
+        benchmark_rows.append({
+            "Model Name": m_name,
+            "Accuracy": f"{m_vals['accuracy']:.3f}",
+            "Precision (Smoker)": f"{m_vals['precision']:.3f}",
+            "Recall (Smoker)": f"{m_vals['recall']:.3f}",
+            "F1-Score": f"{m_vals['f1']:.3f}",
+            "ROC-AUC": f"{m_vals['roc_auc']:.3f}",
+        })
+    df_benchmark = pd.DataFrame(benchmark_rows)
+    st.dataframe(df_benchmark, use_container_width=True, hide_index=True)
+
+    # 3. Interactive Confusion Matrix & Precision-Recall Dynamics
+    st.markdown("### 3. Confusion Matrix & Threshold Sensitivity")
+    cm_col1, cm_col2 = st.columns([6, 6])
+
+    with cm_col1:
+        st.markdown("##### 🔲 Interactive Confusion Matrix")
+        chosen_cm_model = st.selectbox(
+            "Select Model:",
+            list(metrics.keys()),
+            index=2, # Logistic Regression (Balanced)
+            key="cm_model_select"
+        )
+        cm_mode = st.radio("Display Format:", ["Normalized Percentages (%)", "Raw Profile Counts"], horizontal=True)
+
+        raw_cm = metrics[chosen_cm_model]["confusion_matrix"]
+        norm_cm = metrics[chosen_cm_model]["confusion_matrix_norm"]
+
+        if cm_mode == "Normalized Percentages (%)":
+            z_vals = [[val * 100 for val in row] for row in norm_cm]
+            text_vals = [
+                [f"TN: {z_vals[0][0]:.1f}%", f"FP: {z_vals[0][1]:.1f}%"],
+                [f"FN: {z_vals[1][0]:.1f}%", f"TP: {z_vals[1][1]:.1f}%"]
+            ]
+        else:
+            z_vals = raw_cm
+            text_vals = [
+                [f"TN: {raw_cm[0][0]:,}", f"FP: {raw_cm[0][1]:,}"],
+                [f"FN: {raw_cm[1][0]:,}", f"TP: {raw_cm[1][1]:,}"]
+            ]
+
+        fig_cm = go.Figure(data=go.Heatmap(
+            z=z_vals,
+            x=["Predicted Non-Smoker", "Predicted Smoker"],
+            y=["Actual Non-Smoker", "Actual Smoker"],
+            text=text_vals,
+            texttemplate="%{text}",
+            textfont={"size": 14, "color": "white"},
+            colorscale=[[0, "#111420"], [0.5, "#4c1d95"], [1, "#ff2a5f"]],
+            showscale=False
+        ))
+        fig_cm.update_layout(
+            paper_bgcolor="rgba(0,0,0,0)",
+            plot_bgcolor="rgba(0,0,0,0)",
+            font=dict(color="#cbd5e1"),
+            height=320,
+            margin=dict(l=10, r=10, t=20, b=10),
+            yaxis=dict(autorange="reversed")
+        )
+        st.plotly_chart(fig_cm, use_container_width=True)
+
+    with cm_col2:
+        st.markdown("##### 📈 Decision Threshold Trade-Offs")
+        st.caption("How shifting the decision threshold trades off Precision vs Recall.")
+
+        thresh_df = suite["threshold_curve"]
+        fig_pr = go.Figure()
+        fig_pr.add_trace(go.Scatter(x=thresh_df["threshold"], y=thresh_df["recall"], mode="lines+markers", name="Recall (Smoker)", line=dict(color="#38bdf8", width=3)))
+        fig_pr.add_trace(go.Scatter(x=thresh_df["threshold"], y=thresh_df["precision"], mode="lines+markers", name="Precision (Smoker)", line=dict(color="#ff2a5f", width=3)))
+        fig_pr.add_trace(go.Scatter(x=thresh_df["threshold"], y=thresh_df["f1"], mode="lines", name="F1-Score", line=dict(color="#fbbf24", width=2, dash="dot")))
+        fig_pr.add_trace(go.Scatter(x=thresh_df["threshold"], y=thresh_df["accuracy"], mode="lines", name="Accuracy", line=dict(color="#94a3b8", width=2, dash="dash")))
+
+        fig_pr.add_vline(x=0.50, line_dash="dash", line_color="#34d399", annotation_text="Default 0.50", annotation_position="top left")
+
+        fig_pr.update_layout(
+            paper_bgcolor="rgba(0,0,0,0)",
+            plot_bgcolor="rgba(0,0,0,0.1)",
+            font=dict(color="#cbd5e1"),
+            height=320,
+            margin=dict(l=10, r=10, t=20, b=10),
+            xaxis=dict(title="Decision Threshold", gridcolor="#23293e"),
+            yaxis=dict(title="Score (0.0 to 1.0)", gridcolor="#23293e", range=[0, 1.05]),
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+        )
+        st.plotly_chart(fig_pr, use_container_width=True)
+
+    # 4. Feature Impact: Log-Odds & Random Forest Gini Importance
+    st.markdown("### 4. Feature Importance & Interpretability")
+    fi_col1, fi_col2 = st.columns(2)
+
+    with fi_col1:
+        st.markdown("##### Logistic Regression Odds Ratios (Balanced)")
+        st.caption("Odds ratio > 1.0 indicates higher smoking likelihood; < 1.0 indicates protective/lower likelihood.")
+
+        impact_df = suite["feature_impact_df"].copy()
+        top_impact = pd.concat([impact_df.head(8), impact_df.tail(6)]).drop_duplicates()
+        top_impact["direction"] = top_impact["lr_balanced_odds_ratio"].apply(
+            lambda x: "Increases Odds" if x > 1.0 else "Decreases Odds"
+        )
+
+        fig_or = px.bar(
+            top_impact.sort_values(by="lr_balanced_odds_ratio", ascending=True),
+            x="lr_balanced_odds_ratio",
+            y="feature",
+            orientation="h",
+            color="direction",
+            color_discrete_map={"Increases Odds": "#ff2a5f", "Decreases Odds": "#10b981"},
+            labels={"lr_balanced_odds_ratio": "Odds Ratio (exp(β))", "feature": "Feature"},
+            text="lr_balanced_odds_ratio"
+        )
+        fig_or.add_vline(x=1.0, line_dash="dash", line_color="#cbd5e1")
+        fig_or.update_traces(texttemplate='%{text:.2f}x', textposition='outside')
+        fig_or.update_layout(
+            paper_bgcolor="rgba(0,0,0,0)",
+            plot_bgcolor="rgba(0,0,0,0.1)",
+            font=dict(color="#cbd5e1"),
+            height=380,
+            margin=dict(l=10, r=20, t=10, b=10),
+            xaxis=dict(gridcolor="#23293e"),
+            yaxis=dict(gridcolor="#23293e"),
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+        )
+        st.plotly_chart(fig_or, use_container_width=True)
+
+    with fi_col2:
+        st.markdown("##### Random Forest Gini Importance")
+        st.caption("Mean decrease in impurity across 100 decision trees (max_depth=5).")
+
+        top_rf = impact_df.sort_values(by="rf_importance", ascending=True).tail(12)
+        fig_rf = px.bar(
+            top_rf,
+            x="rf_importance",
+            y="feature",
+            orientation="h",
+            color="rf_importance",
+            color_continuous_scale=[[0, "#4c1d95"], [1, "#06b6d4"]],
+            labels={"rf_importance": "Gini Importance", "feature": "Feature"}
+        )
+        fig_rf.update_layout(
+            paper_bgcolor="rgba(0,0,0,0)",
+            plot_bgcolor="rgba(0,0,0,0.1)",
+            font=dict(color="#cbd5e1"),
+            height=380,
+            margin=dict(l=10, r=10, t=10, b=10),
+            coloraxis_showscale=False,
+            xaxis=dict(gridcolor="#23293e"),
+            yaxis=dict(gridcolor="#23293e"),
+        )
+        st.plotly_chart(fig_rf, use_container_width=True)
+
+    # 5. Production Engineering Architecture & Code Deep Dives
+    st.markdown("### 5. Production Engineering Architecture & Code Breakdown")
+
+    with st.expander("🛠️ Data Engineering: Fixing the 'Did Not Answer' Flaw", expanded=False):
+        st.markdown("""
+        In the exploratory notebook, categorical missing values were left as `NaN` and dummy-encoded with `drop_first=True`.
+        This caused missing entries to encode as all-zeros, **silently folding 'did not answer' into 'never' (the dropped reference category)**.
+        
+        **The Production Fix in `smoking_model.py`:**
+        ```python
+        # Explicit category preserves the predictive signal of question avoidance
+        drugs_series = df_clean["drugs"].apply(lambda x: x if x in DRUG_OPTIONS else "unspecified")
+        ```
+        Analysis revealed profiles withholding drug usage smoked at **23.1%**, nearly double the **12.4%** rate of profiles reporting `never`. Treating missing as `"unspecified"` recovered this critical predictive signal.
+        """)
+
+    with st.expander("📐 Mathematical Formulation: Balanced Cross-Entropy Loss", expanded=False):
+        st.markdown("""
+        For class-balanced Logistic Regression, scikit-learn weights each training sample $i$ belonging to class $j \\in \\{0, 1\\}$:
+        $$\\text{Loss} = - \\sum_{i=1}^N w_{y_i} \\left[ y_i \\log(p_i) + (1 - y_i) \\log(1 - p_i) \\right]$$
+        where the class weight is computed as:
+        $$w_j = \\frac{N}{2 \\cdot N_j}$$
+        With $N = 7,264$ training rows, $N_0 = 5,857$ non-smokers ($w_0 = 0.62$) and $N_1 = 1,407$ smokers ($w_1 = 2.58$).
+        This forces the optimizer to treat missing a smoker as **4.16x more costly** than a false positive on a non-smoker.
+        """)
+
+    with st.expander("💻 Modular Pipeline Code (`smoking_model.py`)", expanded=False):
+        st.markdown("""
+        The complete pipeline is decoupled from Streamlit and testable standalone:
+        - `prepare_training_data()`: Generates one-hot feature matrix with schema guarantees.
+        - `train_model_suite()`: Fits 5 benchmark models, calculates metrics, confusion matrices, and ROC-AUC.
+        - `predict_single_profile()`: Exposes a single-sample inference endpoint with log-odds attributions and risk categorization.
+        - `compute_threshold_curve()`: Pre-computes precision/recall curves for production calibration.
+        """)
+
+# ---------------------------------------------------------
+# TAB 4: BAY AREA 2012 DATA STUDIO (THE WHOLE SHEBANG)
 # ---------------------------------------------------------
 elif mode == "Bay Area 2012 Data Studio":
     st.markdown('<div class="hero-title">Bay Area 2012 Data Studio</div>', unsafe_allow_html=True)
@@ -886,7 +1424,7 @@ elif mode == "Bay Area 2012 Data Studio":
         st.plotly_chart(fig_cities, use_container_width=True)
 
 # ---------------------------------------------------------
-# TAB 3: CUPID'S PROFILE DETECTIVE
+# TAB 5: CUPID'S PROFILE DETECTIVE
 # ---------------------------------------------------------
 elif mode == "Profile Detective":
     st.markdown('<div class="hero-title">Profile Detective</div>', unsafe_allow_html=True)
